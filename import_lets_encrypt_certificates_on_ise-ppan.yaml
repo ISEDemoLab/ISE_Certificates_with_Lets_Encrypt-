@@ -1,0 +1,96 @@
+---
+- name: Import certificates into ISE
+  gather_facts: false
+  hosts: ise-ppan-test
+  vars_files:
+    - "{{ ansible_config_file | dirname }}/vars/isedtea.yaml"
+
+  tasks:
+    - name: Copy Portals Cert
+      delegate_to: localhost
+      ansible.builtin.copy:
+        src: /Users/chmoreto/certbotconf/live/isedtea.net/cert.pem
+        dest: "{{ ansible_config_file | dirname }}/certs/trusted/cert.pem"
+        follow: yes
+      register: portal_pvk
+
+    - name: Copy Portals Private Key
+      delegate_to: localhost
+      ansible.builtin.copy:
+        src: /Users/chmoreto/certbotconf/live/isedtea.net/privkey.pem
+        dest: "{{ ansible_config_file | dirname }}/certs/trusted/privkey.pem"
+        follow: yes
+      register: portal_pvk
+
+    - name: Process Portals Cert Raw Data
+      delegate_to: localhost
+      ansible.builtin.shell:
+        cmd: awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' '/Users/chmoreto/Labs/ISEDTEA/certs/trusted/cert.pem'
+      register: portal_cert_raw
+
+    - name: Process Portals Private Key Data
+      delegate_to: localhost
+      ansible.builtin.shell:
+        cmd: awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}' '/Users/chmoreto/Labs/ISEDTEA/certs/trusted/privkey.pem'
+      register: portal_pvk_raw
+
+# ----------------------------------------------------------------------------
+# Using the `cisco.ise.system_certificate_import` module always failed for me with this very informative error message:
+# ok: [ise-span-test] => changed=false 
+#   ise_response:
+#     response:
+#       id: null
+#       message: null
+#       status: null
+#     version: 1.0.1
+#   result: ''
+#
+# Due to this, I have used the API to import the System Certificates
+# ----------------------------------------------------------------------------
+
+    - name: Import Portals system certificate on {{ inventory_hostname }} via API
+      delegate_to: localhost
+      ansible.builtin.uri:
+        url: https://ise-ppan-test.isedtea.net/api/v1/certs/system-certificate/import
+        method: POST
+        url_username: iseadmin
+        url_password: ISEisC00L
+        force_basic_auth: yes
+        body: |
+          { 
+            "admin": false,
+            "allowExtendedValidity": true,
+            "allowOutOfDateCert": true,
+            "allowPortalTagTransferForSameSubject": true,
+            "allowReplacementOfCertificates": true,
+            "allowReplacementOfPortalGroupTag": true,
+            "allowRoleTransferForSameSubject": true,
+            "allowSHA1Certificates": false,
+            "allowWildCardCertificates": true,
+            "data": "{{ portal_cert_raw.stdout }}",
+            "eap": false,
+            "ims": false,
+            "name": "Portals",
+            "privateKeyData": "{{ portal_pvk_raw.stdout }}",
+            "password": "{{ ise_password }}",
+            "portal": true,
+            "portalGroupTag": "Default Portal Certificate Group",
+            "pxgrid": false,
+            "radius": false,
+            "saml": false,
+            "validateCertificateExtensions": false
+          }
+        status_code: [
+                      200,  # Created Certificate
+                      201,  # Created
+                      405,  # Invalid input
+                      409,  # Certificate already exists
+                      500,  # Internal server error
+                      ]
+        body_format: json
+        validate_certs: "{{ ise_verify }}"
+        return_content: true
+        timeout: 600 # in seconds (10 minutes)
+      register: response
+      failed_when: (response.status != 200) and (response.status != 500)
+      ignore_errors: true
